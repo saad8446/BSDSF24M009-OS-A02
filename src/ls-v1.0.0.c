@@ -1,9 +1,11 @@
 /*
- * Programming Assignment 02: ls-v1.2.0
- * Added: -l (long listing), column display (down then across)
+ * Programming Assignment 02: ls-v1.3.0
+ * Added: -l (long listing), column display (down then across),
+ *        -x (horizontal display)
  * Usage:
  *       $ ls
  *       $ ls -l
+ *       $ ls -x
  *       $ ls /home /etc
  */
 #include <stdio.h>
@@ -22,52 +24,64 @@
 
 extern int errno;
 
-void do_ls(const char *dir, int long_flag);
+/* Display modes */
+enum display_mode
+{
+    MODE_DEFAULT,   /* down then across */
+    MODE_LONG,      /* -l */
+    MODE_HORIZONTAL /* -x */
+};
+
+void do_ls(const char *dir, enum display_mode mode);
 void do_ls_long(const char *dir);
 void mode_to_string(mode_t mode, char *str);
 int  read_names(const char *dir, char ***names_out, int *maxlen);
 void print_columns(char **names, int n, int maxlen);
+void print_horizontal(char **names, int n, int maxlen);
 void free_names(char **names, int n);
 int  get_term_width(void);
 
 int main(int argc, char *argv[])
 {
     int opt;
-    int long_flag = 0;
+    enum display_mode mode = MODE_DEFAULT;
 
-    while ((opt = getopt(argc, argv, "l")) != -1)
+    while ((opt = getopt(argc, argv, "lx")) != -1)
     {
         switch (opt)
         {
         case 'l':
-            long_flag = 1;
+            mode = MODE_LONG;
+            break;
+        case 'x':
+            mode = MODE_HORIZONTAL;
             break;
         default:
-            fprintf(stderr, "Usage: %s [-l] [dir...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l | -x] [dir...]\n", argv[0]);
             exit(EXIT_FAILURE);
         }
     }
 
     if (optind == argc)
     {
-        do_ls(".", long_flag);
+        do_ls(".", mode);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
             printf("Directory listing of %s : \n", argv[i]);
-            do_ls(argv[i], long_flag);
+            do_ls(argv[i], mode);
             puts("");
         }
     }
     return 0;
 }
 
-/* Decide which display function to call */
-void do_ls(const char *dir, int long_flag)
+/* Decide which display function to call, based on the mode flag */
+void do_ls(const char *dir, enum display_mode mode)
 {
-    if (long_flag)
+    if (mode == MODE_LONG)
     {
         do_ls_long(dir);
         return;
@@ -79,7 +93,11 @@ void do_ls(const char *dir, int long_flag)
     if (n < 0)
         return;
 
-    print_columns(names, n, maxlen);
+    if (mode == MODE_HORIZONTAL)
+        print_horizontal(names, n, maxlen);
+    else
+        print_columns(names, n, maxlen);
+
     free_names(names, n);
 }
 
@@ -175,6 +193,30 @@ void print_columns(char **names, int n, int maxlen)
         }
         printf("\n");
     }
+}
+
+/* "Across": fill left to right, wrap when the line is full (-x) */
+void print_horizontal(char **names, int n, int maxlen)
+{
+    if (n == 0)
+        return;
+
+    int term_width = get_term_width();
+    int col_width = maxlen + 2;
+    int pos = 0;                                /* current horizontal position */
+
+    for (int i = 0; i < n; i++)
+    {
+        /* would this item run past the end of the line? */
+        if (pos > 0 && pos + col_width > term_width)
+        {
+            printf("\n");
+            pos = 0;
+        }
+        printf("%-*s", col_width, names[i]);
+        pos += col_width;
+    }
+    printf("\n");
 }
 
 void free_names(char **names, int n)
