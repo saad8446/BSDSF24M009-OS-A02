@@ -1,10 +1,10 @@
 /*
- * Programming Assignment 02: ls-v1.1.0
- * Added: -l (long listing format)
+ * Programming Assignment 02: ls-v1.2.0
+ * Added: -l (long listing), column display (down then across)
  * Usage:
  *       $ ls
  *       $ ls -l
- *       $ ls -l /home /etc
+ *       $ ls /home /etc
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +15,7 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <pwd.h>
 #include <grp.h>
 #include <time.h>
@@ -24,6 +25,10 @@ extern int errno;
 void do_ls(const char *dir, int long_flag);
 void do_ls_long(const char *dir);
 void mode_to_string(mode_t mode, char *str);
+int  read_names(const char *dir, char ***names_out, int *maxlen);
+void print_columns(char **names, int n, int maxlen);
+void free_names(char **names, int n);
+int  get_term_width(void);
 
 int main(int argc, char *argv[])
 {
@@ -59,6 +64,7 @@ int main(int argc, char *argv[])
     return 0;
 }
 
+/* Decide which display function to call */
 void do_ls(const char *dir, int long_flag)
 {
     if (long_flag)
@@ -67,24 +73,115 @@ void do_ls(const char *dir, int long_flag)
         return;
     }
 
-    struct dirent *entry;
+    char **names = NULL;
+    int maxlen = 0;
+    int n = read_names(dir, &names, &maxlen);
+    if (n < 0)
+        return;
+
+    print_columns(names, n, maxlen);
+    free_names(names, n);
+}
+
+/* Read all non-hidden names into a dynamic array; track the longest name */
+int read_names(const char *dir, char ***names_out, int *maxlen)
+{
     DIR *dp = opendir(dir);
     if (dp == NULL)
     {
         fprintf(stderr, "Cannot open directory : %s\n", dir);
-        return;
+        return -1;
     }
+
+    int capacity = 64, count = 0;
+    char **names = malloc(capacity * sizeof(char *));
+    if (names == NULL)
+    {
+        perror("malloc");
+        closedir(dp);
+        return -1;
+    }
+
+    *maxlen = 0;
+    struct dirent *entry;
     errno = 0;
     while ((entry = readdir(dp)) != NULL)
     {
         if (entry->d_name[0] == '.')
             continue;
-        printf("%s\n", entry->d_name);
+
+        if (count == capacity)
+        {
+            capacity *= 2;
+            char **tmp = realloc(names, capacity * sizeof(char *));
+            if (tmp == NULL)
+            {
+                perror("realloc");
+                free_names(names, count);
+                closedir(dp);
+                return -1;
+            }
+            names = tmp;
+        }
+
+        names[count] = strdup(entry->d_name);
+        int len = (int)strlen(entry->d_name);
+        if (len > *maxlen)
+            *maxlen = len;
+        count++;
     }
     if (errno != 0)
         perror("readdir failed");
 
     closedir(dp);
+    *names_out = names;
+    return count;
+}
+
+/* Get terminal width using ioctl; fall back to 80 */
+int get_term_width(void)
+{
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col == 0)
+        return 80;
+    return w.ws_col;
+}
+
+/* "Down then across": fill each column top to bottom */
+void print_columns(char **names, int n, int maxlen)
+{
+    if (n == 0)
+        return;
+
+    int term_width = get_term_width();
+    int col_width = maxlen + 2;                 /* 2 spaces between columns */
+    int cols = term_width / col_width;
+    if (cols < 1)
+        cols = 1;
+    int rows = (n + cols - 1) / cols;           /* ceiling division */
+
+    for (int r = 0; r < rows; r++)
+    {
+        for (int c = 0; c < cols; c++)
+        {
+            int idx = r + c * rows;
+            if (idx >= n)
+                break;
+            /* pad every item except the last one on the line */
+            if (idx + rows < n)
+                printf("%-*s", col_width, names[idx]);
+            else
+                printf("%s", names[idx]);
+        }
+        printf("\n");
+    }
+}
+
+void free_names(char **names, int n)
+{
+    for (int i = 0; i < n; i++)
+        free(names[i]);
+    free(names);
 }
 
 /* Convert st_mode into a string like "drwxr-xr-x" */
@@ -123,6 +220,7 @@ void mode_to_string(mode_t mode, char *str)
     str[10] = '\0';
 }
 
+/* Long listing format (-l) */
 void do_ls_long(const char *dir)
 {
     DIR *dp = opendir(dir);
