@@ -1,7 +1,7 @@
 /*
- * Programming Assignment 02: ls-v1.3.0
+ * Programming Assignment 02: ls-v1.4.0
  * Added: -l (long listing), column display (down then across),
- *        -x (horizontal display)
+ *        -x (horizontal display), alphabetical sort
  * Usage:
  *       $ ls
  *       $ ls -l
@@ -33,9 +33,10 @@ enum display_mode
 };
 
 void do_ls(const char *dir, enum display_mode mode);
-void do_ls_long(const char *dir);
+void do_ls_long(const char *dir, char **names, int n);
 void mode_to_string(mode_t mode, char *str);
 int  read_names(const char *dir, char ***names_out, int *maxlen);
+int  compare_names(const void *a, const void *b);
 void print_columns(char **names, int n, int maxlen);
 void print_horizontal(char **names, int n, int maxlen);
 void free_names(char **names, int n);
@@ -78,27 +79,34 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-/* Decide which display function to call, based on the mode flag */
+/* Read names, sort them, then call the right display function */
 void do_ls(const char *dir, enum display_mode mode)
 {
-    if (mode == MODE_LONG)
-    {
-        do_ls_long(dir);
-        return;
-    }
-
     char **names = NULL;
     int maxlen = 0;
     int n = read_names(dir, &names, &maxlen);
     if (n < 0)
         return;
 
-    if (mode == MODE_HORIZONTAL)
+    /* Sort once, before any display function is called */
+    qsort(names, n, sizeof(char *), compare_names);
+
+    if (mode == MODE_LONG)
+        do_ls_long(dir, names, n);
+    else if (mode == MODE_HORIZONTAL)
         print_horizontal(names, n, maxlen);
     else
         print_columns(names, n, maxlen);
 
     free_names(names, n);
+}
+
+/* Comparison function for qsort: compares two char * elements of the array */
+int compare_names(const void *a, const void *b)
+{
+    const char *s1 = *(const char **)a;
+    const char *s2 = *(const char **)b;
+    return strcmp(s1, s2);
 }
 
 /* Read all non-hidden names into a dynamic array; track the longest name */
@@ -207,7 +215,6 @@ void print_horizontal(char **names, int n, int maxlen)
 
     for (int i = 0; i < n; i++)
     {
-        /* would this item run past the end of the line? */
         if (pos > 0 && pos + col_width > term_width)
         {
             printf("\n");
@@ -262,28 +269,18 @@ void mode_to_string(mode_t mode, char *str)
     str[10] = '\0';
 }
 
-/* Long listing format (-l) */
-void do_ls_long(const char *dir)
+/* Long listing format (-l): works on the already sorted names array */
+void do_ls_long(const char *dir, char **names, int n)
 {
-    DIR *dp = opendir(dir);
-    if (dp == NULL)
-    {
-        fprintf(stderr, "Cannot open directory : %s\n", dir);
-        return;
-    }
-
-    struct dirent *entry;
     struct stat st;
     char path[PATH_MAX];
     long total = 0;
     int w_link = 0, w_user = 0, w_group = 0, w_size = 0;
 
     /* Pass 1: find the widest value in each column, and the total blocks */
-    while ((entry = readdir(dp)) != NULL)
+    for (int i = 0; i < n; i++)
     {
-        if (entry->d_name[0] == '.')
-            continue;
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
         if (lstat(path, &st) == -1)
         {
             perror(path);
@@ -309,13 +306,10 @@ void do_ls_long(const char *dir)
 
     printf("total %ld\n", total / 2);   /* st_blocks counts 512-byte units; ls shows 1K */
 
-    /* Pass 2: print each entry */
-    rewinddir(dp);
-    while ((entry = readdir(dp)) != NULL)
+    /* Pass 2: print each entry in sorted order */
+    for (int i = 0; i < n; i++)
     {
-        if (entry->d_name[0] == '.')
-            continue;
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
         if (lstat(path, &st) == -1)
             continue;
 
@@ -340,21 +334,19 @@ void do_ls_long(const char *dir)
                w_group, group,
                w_size, (long long)st.st_size,
                t + 4,
-               entry->d_name);
+               names[i]);
 
         /* symbolic link: show where it points */
         if (S_ISLNK(st.st_mode))
         {
             char target[PATH_MAX];
-            ssize_t n = readlink(path, target, sizeof(target) - 1);
-            if (n != -1)
+            ssize_t len = readlink(path, target, sizeof(target) - 1);
+            if (len != -1)
             {
-                target[n] = '\0';
+                target[len] = '\0';
                 printf(" -> %s", target);
             }
         }
         printf("\n");
     }
-
-    closedir(dp);
 }
