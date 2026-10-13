@@ -1,13 +1,14 @@
 /*
- * Programming Assignment 02: ls-v1.5.0
+ * Programming Assignment 02: ls-v1.6.0
  * Added: -l (long listing), column display (down then across),
  *        -x (horizontal display), alphabetical sort,
- *        colorized output based on file type
+ *        colorized output, -R (recursive listing)
  * Usage:
  *       $ ls
  *       $ ls -l
  *       $ ls -x
- *       $ ls /home /etc
+ *       $ ls -R src
+ *       $ ls -lR /home /etc
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,7 +45,7 @@ enum display_mode
 /* 1 if output goes to a terminal (colors on), 0 if piped/redirected */
 static int use_color = 0;
 
-void do_ls(const char *dir, enum display_mode mode);
+void do_ls(const char *dir, enum display_mode mode, int recursive);
 void do_ls_long(const char *dir, char **names, int n);
 void mode_to_string(mode_t mode, char *str);
 int  read_names(const char *dir, char ***names_out, int *maxlen);
@@ -56,15 +57,17 @@ int  get_term_width(void);
 int  has_suffix(const char *name, const char *suffix);
 const char *get_color(const char *dir, const char *name);
 void print_colored(const char *dir, const char *name);
+void build_path(char *buf, size_t size, const char *dir, const char *name);
 
 int main(int argc, char *argv[])
 {
     int opt;
+    int recursive_flag = 0;
     enum display_mode mode = MODE_DEFAULT;
 
     use_color = isatty(STDOUT_FILENO);
 
-    while ((opt = getopt(argc, argv, "lx")) != -1)
+    while ((opt = getopt(argc, argv, "lxR")) != -1)
     {
         switch (opt)
         {
@@ -74,31 +77,57 @@ int main(int argc, char *argv[])
         case 'x':
             mode = MODE_HORIZONTAL;
             break;
+        case 'R':
+            recursive_flag = 1;
+            break;
         default:
-            fprintf(stderr, "Usage: %s [-l | -x] [dir...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l | -x] [-R] [dir...]\n", argv[0]);
             exit(EXIT_FAILURE);
         }
     }
 
     if (optind == argc)
     {
-        do_ls(".", mode);
+        do_ls(".", mode, recursive_flag);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
-            printf("Directory listing of %s : \n", argv[i]);
-            do_ls(argv[i], mode);
-            puts("");
+            if (recursive_flag)
+            {
+                /* do_ls prints its own "dir:" header; blank line between args */
+                if (i > optind)
+                    puts("");
+                do_ls(argv[i], mode, recursive_flag);
+            }
+            else
+            {
+                printf("Directory listing of %s : \n", argv[i]);
+                do_ls(argv[i], mode, recursive_flag);
+                puts("");
+            }
         }
     }
     return 0;
 }
 
-/* Read names, sort them, then call the right display function */
-void do_ls(const char *dir, enum display_mode mode)
+/* Build "dir/name" (avoids a double slash if dir already ends with '/') */
+void build_path(char *buf, size_t size, const char *dir, const char *name)
 {
+    size_t len = strlen(dir);
+    if (len > 0 && dir[len - 1] == '/')
+        snprintf(buf, size, "%s%s", dir, name);
+    else
+        snprintf(buf, size, "%s/%s", dir, name);
+}
+
+/* Read names, sort, display, then (if -R) recurse into subdirectories */
+void do_ls(const char *dir, enum display_mode mode, int recursive)
+{
+    if (recursive)
+        printf("%s:\n", dir);
+
     char **names = NULL;
     int maxlen = 0;
     int n = read_names(dir, &names, &maxlen);
@@ -113,6 +142,28 @@ void do_ls(const char *dir, enum display_mode mode)
         print_horizontal(dir, names, n, maxlen);
     else
         print_columns(dir, names, n, maxlen);
+
+    if (recursive)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            if (strcmp(names[i], ".") == 0 || strcmp(names[i], "..") == 0)
+                continue;
+
+            char path[PATH_MAX];
+            struct stat st;
+            build_path(path, sizeof(path), dir, names[i]);
+
+            if (lstat(path, &st) == -1)
+                continue;
+
+            if (S_ISDIR(st.st_mode))
+            {
+                printf("\n");
+                do_ls(path, mode, recursive);   /* recursive call with full path */
+            }
+        }
+    }
 
     free_names(names, n);
 }
@@ -206,7 +257,7 @@ const char *get_color(const char *dir, const char *name)
     struct stat st;
     char path[PATH_MAX];
 
-    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    build_path(path, sizeof(path), dir, name);
     if (lstat(path, &st) == -1)
         return NULL;
 
@@ -346,7 +397,7 @@ void do_ls_long(const char *dir, char **names, int n)
     /* Pass 1: find the widest value in each column, and the total blocks */
     for (int i = 0; i < n; i++)
     {
-        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+        build_path(path, sizeof(path), dir, names[i]);
         if (lstat(path, &st) == -1)
         {
             perror(path);
@@ -375,7 +426,7 @@ void do_ls_long(const char *dir, char **names, int n)
     /* Pass 2: print each entry in sorted order */
     for (int i = 0; i < n; i++)
     {
-        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+        build_path(path, sizeof(path), dir, names[i]);
         if (lstat(path, &st) == -1)
             continue;
 
